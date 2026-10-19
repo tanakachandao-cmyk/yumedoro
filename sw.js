@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yumeodoro-shell-v16';
+const CACHE_NAME = 'yumeodoro-shell-v18';
 const SHELL_FILES = [
   './',
   './index.html',

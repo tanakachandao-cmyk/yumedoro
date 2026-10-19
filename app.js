@@ -64,8 +64,8 @@
       return true;
     } catch (error) { showNotice(error.message || '画像を保存できませんでした。空き容量を確認してください。'); return false; }
   }
-  function cropScale(){return Math.max(CROP_WIDTH/cropSource.naturalWidth,CROP_HEIGHT/cropSource.naturalHeight)*cropZoom;}
-  function constrainCrop(){const scale=cropScale(),width=cropSource.naturalWidth*scale,height=cropSource.naturalHeight*scale;cropOffsetX=Math.min(0,Math.max(CROP_WIDTH-width,cropOffsetX));cropOffsetY=Math.min(0,Math.max(CROP_HEIGHT-height,cropOffsetY));}
+  function cropScale(){return Math.min(CROP_WIDTH/cropSource.naturalWidth,CROP_HEIGHT/cropSource.naturalHeight)*cropZoom;}
+  function constrainCrop(){const scale=cropScale(),width=cropSource.naturalWidth*scale,height=cropSource.naturalHeight*scale;if(width<=CROP_WIDTH)cropOffsetX=(CROP_WIDTH-width)/2;else cropOffsetX=Math.min(0,Math.max(CROP_WIDTH-width,cropOffsetX));if(height<=CROP_HEIGHT)cropOffsetY=(CROP_HEIGHT-height)/2;else cropOffsetY=Math.min(0,Math.max(CROP_HEIGHT-height,cropOffsetY));}
   function drawCrop(){if(!cropSource)return;const canvas=$('cropCanvas'),context=canvas.getContext('2d');constrainCrop();context.clearRect(0,0,canvas.width,canvas.height);const scale=cropScale();context.drawImage(cropSource,cropOffsetX,cropOffsetY,cropSource.naturalWidth*scale,cropSource.naturalHeight*scale);}
   function setCropZoom(value){const oldScale=cropScale(),centerX=(CROP_WIDTH/2-cropOffsetX)/oldScale,centerY=(CROP_HEIGHT/2-cropOffsetY)/oldScale;cropZoom=Number(value)/100;const newScale=cropScale();cropOffsetX=CROP_WIDTH/2-centerX*newScale;cropOffsetY=CROP_HEIGHT/2-centerY*newScale;$('cropZoomValue').textContent=`${Math.round(cropZoom*100)}%`;drawCrop();}
   function openCropEditor(file){
