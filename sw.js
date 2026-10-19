@@ -1,9 +1,9 @@
-const CACHE_NAME = 'yumeodoro-shell-v18';
+const CACHE_NAME = 'yumeodoro-shell-v26';
 const SHELL_FILES = [
   './',
   './index.html',
-  './styles.css',
-  './app.js',
+  './styles.css?v=26',
+  './app.js?v=26',
   './manifest.webmanifest',
   './assets/speech-bubble.png'
 ];

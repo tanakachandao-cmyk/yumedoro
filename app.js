@@ -5,18 +5,23 @@
   const CROP_HEIGHT = 960;
   const CATEGORIES = [
     ['focusStart', '集中開始時'], ['focus', '集中中'], ['focusEnd', '集中終了時'],
-    ['breakStart', '休憩開始時'], ['break', '休憩中'], ['breakEnd', '休憩終了時']
+    ['breakStart', '休憩開始時'], ['break', '休憩中'], ['breakEnd', '休憩終了時'], ['setEnd', 'ポモドーロ1セット完了時']
   ];
-  const DEFAULT = { durations: { focus: 25, shortBreak: 5, longBreak: 15 }, target: 4, sound: false, displayName: '', quotes: [], calendarQuotes: {}, mode: 'focus', completed: 0, status: 'idle', endAt: null, remaining: 25 * 60_000 };
+  const DEFAULT = { durations: { focus: 25, shortBreak: 5, longBreak: 15 }, target: 4, sound: false, displayName: '', quotes: [], calendarQuotes: {}, dailyQuote: { time: '', text: '' }, mode: 'focus', completed: 0, status: 'idle', endAt: null, remaining: 25 * 60_000 };
   const $ = id => document.getElementById(id);
   let state = loadState();
+  const pageOpenedDate = localDateKey(new Date());
+  const pageOpeningQuote = state.calendarQuotes[pageOpenedDate];
+  let pageOpeningQuotePending = typeof pageOpeningQuote === 'string' && Boolean(pageOpeningQuote.trim());
   let dbPromise;
   let imageUrl = null;
   let editingQuote = null;
   let lastQuote = '';
   let tickHandle;
+  let advanceHandle;
   let toastHandle;
   let midnightHandle;
+  let dailyQuoteHandle;
   let cropSource = null;
   let cropOriginal = null;
   let cropZoom = 1;
@@ -29,7 +34,7 @@
   function loadState() {
     try {
       const data = JSON.parse(localStorage.getItem(KEY) || '{}');
-      const merged = { ...DEFAULT, ...data, durations: { ...DEFAULT.durations, ...(data.durations || {}) }, quotes: Array.isArray(data.quotes) ? data.quotes : [], calendarQuotes: data.calendarQuotes && typeof data.calendarQuotes === 'object' && !Array.isArray(data.calendarQuotes) ? data.calendarQuotes : {} };
+      const merged = { ...DEFAULT, ...data, durations: { ...DEFAULT.durations, ...(data.durations || {}) }, quotes: Array.isArray(data.quotes) ? data.quotes : [], calendarQuotes: data.calendarQuotes && typeof data.calendarQuotes === 'object' && !Array.isArray(data.calendarQuotes) ? data.calendarQuotes : {}, dailyQuote: { ...DEFAULT.dailyQuote, ...(data.dailyQuote || {}) } };
       if (!['focus','shortBreak','longBreak'].includes(merged.mode)) merged.mode = 'focus';
       if (!['idle','running','paused','done'].includes(merged.status)) merged.status = 'idle';
       if (merged.status === 'running' && Number.isFinite(merged.endAt)) merged.remaining = Math.max(0, merged.endAt - Date.now());
@@ -99,7 +104,7 @@
   function modeMinutes(mode = state.mode) { return Number(state.durations[mode]) || DEFAULT.durations[mode]; }
   function duration() { return modeMinutes() * 60_000; }
   function categoryFor(mode = state.mode, phase = state.status) {
-    if (phase === 'done') return mode === 'focus' ? 'focusEnd' : 'breakEnd';
+    if (phase === 'done') return mode === 'focus' ? (state.completed >= state.target ? 'setEnd' : 'focusEnd') : 'breakEnd';
     if (phase === 'running' || phase === 'paused') return mode === 'focus' ? 'focus' : 'break';
     return mode === 'focus' ? 'focusStart' : 'breakStart';
   }
@@ -115,8 +120,9 @@
     const modeNames = { focus: ['FOCUS TIME','集中'], shortBreak: ['SHORT BREAK','短い休憩'], longBreak: ['LONG BREAK','長い休憩'] };
     $('modeLabel').textContent = modeNames[state.mode][0]; $('modeJapanese').textContent = modeNames[state.mode][1];
     $('speechName').textContent = state.displayName || ''; $('speechName').hidden = !state.displayName;
-    const speechKey = `${localDateKey(new Date())}:${categoryFor()}`;
-    if (render._category !== speechKey) { render._category = speechKey; const scheduled = state.calendarQuotes[localDateKey(new Date())]; $('speechText').textContent = typeof scheduled === 'string' && scheduled.trim() ? scheduled : quoteText(); }
+    const now = new Date(), today = localDateKey(now), dailyTimeActive = Boolean(state.dailyQuote.time && state.dailyQuote.text.trim() && `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}` >= state.dailyQuote.time);
+    const speechKey = `${today}:${categoryFor()}:${dailyTimeActive}`;
+    if (render._category !== speechKey) { render._category = speechKey; if (pageOpeningQuotePending) { $('speechText').textContent = pageOpeningQuote; pageOpeningQuotePending = false; } else { const scheduled = state.calendarQuotes[today]; $('speechText').textContent = dailyTimeActive ? state.dailyQuote.text : typeof scheduled === 'string' && scheduled.trim() ? scheduled : quoteText(); } }
     const left = state.status === 'running' ? Math.max(0, state.endAt - Date.now()) : Math.max(0, Number(state.remaining) || 0);
     const mins = Math.floor(left / 60_000), secs = Math.floor((left % 60_000) / 1000);
     $('timerDisplay').textContent = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
@@ -128,20 +134,21 @@
   }
   function start() { if(state.status === 'done') return; if(state.status !== 'paused') state.remaining = duration(); state.status='running'; state.endAt=Date.now()+state.remaining; persist(); render(); runTicker(); }
   function pause() { if(state.status !== 'running') return; state.remaining=Math.max(0,state.endAt-Date.now());state.status='paused';state.endAt=null;persist();render();clearInterval(tickHandle); }
-  function reset() { state.status='idle';state.endAt=null;state.remaining=duration();persist();render();clearInterval(tickHandle); }
+  function reset() { clearTimeout(advanceHandle);advanceHandle=null;state.status='idle';state.endAt=null;state.remaining=duration();persist();render();clearInterval(tickHandle); }
   function runTicker() { clearInterval(tickHandle);tickHandle=setInterval(() => { if(state.status!=='running') return; state.remaining=Math.max(0,state.endAt-Date.now()); if(state.remaining<=0) finishTimer(); else render(); },250); }
-  function finishTimer() { clearInterval(tickHandle);state.status='done';state.remaining=0;state.endAt=null;if(state.mode==='focus')state.completed=Math.min(state.target,state.completed+1);persist();render();render._category=null;render();if(state.sound)playChime();showToast(state.mode==='focus'?'集中セッション完了！':'休憩時間が終わりました'); }
+  function finishTimer() { clearInterval(tickHandle);state.status='done';state.remaining=0;state.endAt=null;if(state.mode==='focus')state.completed=Math.min(state.target,state.completed+1);persist();render();render._category=null;render();if(state.sound)playChime();showToast(state.mode==='focus'?'集中セッション完了！':'休憩時間が終わりました');clearTimeout(advanceHandle);advanceHandle=setTimeout(()=>{advanceHandle=null;nextMode();start();},2500); }
   function playChime(){try{const audio=new(window.AudioContext||window.webkitAudioContext)();[660,880].forEach((hz,i)=>{const oscillator=audio.createOscillator(),gain=audio.createGain();oscillator.frequency.value=hz;gain.gain.setValueAtTime(.08,audio.currentTime+i*.18);gain.gain.exponentialRampToValueAtTime(.001,audio.currentTime+i*.18+.35);oscillator.connect(gain).connect(audio.destination);oscillator.start(audio.currentTime+i*.18);oscillator.stop(audio.currentTime+i*.18+.36);});setTimeout(()=>audio.close(),1000);}catch{} }
-  function setMode(mode) { if(!['focus','shortBreak','longBreak'].includes(mode))return;if(mode==='focus'&&state.mode==='longBreak'&&state.completed>=state.target)state.completed=0;state.mode=mode;state.status='idle';state.endAt=null;state.remaining=modeMinutes(mode)*60_000;persist();render._category=null;render();clearInterval(tickHandle); }
+  function setMode(mode) { if(!['focus','shortBreak','longBreak'].includes(mode))return;clearTimeout(advanceHandle);advanceHandle=null;if(mode==='focus'&&state.mode==='longBreak'&&state.completed>=state.target)state.completed=0;state.mode=mode;state.status='idle';state.endAt=null;state.remaining=modeMinutes(mode)*60_000;persist();render._category=null;render();clearInterval(tickHandle); }
   function nextMode() { if(state.mode==='focus'){setMode(state.completed>0&&state.completed%state.target===0?'longBreak':'shortBreak');}else setMode('focus'); }
-  function openSettings() { syncSettingsForm();$('timerView').hidden=true;$('settingsView').hidden=false;window.scrollTo(0,0); }
+  function openSettings() { $('timerView').hidden=true;$('settingsView').hidden=false;window.scrollTo(0,0);try{syncSettingsForm();}catch(error){console.error('設定画面の初期化に失敗しました',error);showNotice('設定を読み込めませんでした。ページを再読み込みしてください。');} }
   function closeSettings() { $('settingsView').hidden=true;$('timerView').hidden=false;window.scrollTo(0,0); }
   function syncSettingsForm(){
     $('displayName').value=state.displayName || '';$('focusMinutes').value=state.durations.focus;$('shortMinutes').value=state.durations.shortBreak;$('longMinutes').value=state.durations.longBreak;$('sessionsTarget').value=state.target;$('soundEnabled').checked=state.sound;
+    $('dailyQuoteTime').value=state.dailyQuote.time;$('dailyQuoteText').value=state.dailyQuote.text;
     $('quoteCategory').replaceChildren(...CATEGORIES.map(([value,label])=>{const o=document.createElement('option');o.value=value;o.textContent=label;return o;}));renderQuotes();renderCalendar();
   }
-  function renderQuotes(){const list=$('quoteList');list.replaceChildren();if(!state.quotes.length){const empty=document.createElement('div');empty.className='empty-quotes';empty.textContent='まだセリフはありません。最初のひとことを登録しましょう。';list.append(empty);return;}
-    for(const quote of state.quotes){const row=document.createElement('div');row.className='quote-item';const copy=document.createElement('p');const label=document.createElement('small');label.textContent=CATEGORIES.find(x=>x[0]===quote.category)?.[1]||'集中中';copy.append(label,document.createTextNode(quote.text));const actions=document.createElement('div');actions.className='quote-actions';const edit=document.createElement('button');edit.type='button';edit.textContent='✎';edit.title='編集';edit.setAttribute('aria-label','セリフを編集');edit.onclick=()=>{editingQuote=quote.id;$('quoteCategory').value=quote.category;$('quoteInput').value=quote.text;$('quoteEditLabel').textContent='セリフを編集中';$('addQuote').textContent='更新する';$('quoteInput').focus();};const del=document.createElement('button');del.type='button';del.textContent='×';del.title='削除';del.setAttribute('aria-label','セリフを削除');del.onclick=()=>{state.quotes=state.quotes.filter(q=>q.id!==quote.id);if(editingQuote===quote.id)clearQuoteForm();persist();renderQuotes();render._category=null;render();};actions.append(edit,del);row.append(copy,actions);list.append(row);}
+  function renderQuotes(){const list=$('quoteList');list.replaceChildren();const category=$('quoteCategory').value,labelText=CATEGORIES.find(x=>x[0]===category)?.[1]||'選択したタイミング',quotes=state.quotes.filter(quote=>quote.category===category);if(!quotes.length){const empty=document.createElement('div');empty.className='empty-quotes';empty.textContent=state.quotes.length?`「${labelText}」のセリフはまだありません。`:'まだセリフはありません。最初のひとことを登録しましょう。';list.append(empty);return;}
+    for(const quote of quotes){const row=document.createElement('div');row.className='quote-item';const copy=document.createElement('p');const label=document.createElement('small');label.textContent=labelText;copy.append(label,document.createTextNode(quote.text));const actions=document.createElement('div');actions.className='quote-actions';const edit=document.createElement('button');edit.type='button';edit.textContent='✎';edit.title='編集';edit.setAttribute('aria-label','セリフを編集');edit.onclick=()=>{editingQuote=quote.id;$('quoteCategory').value=quote.category;$('quoteInput').value=quote.text;$('quoteEditLabel').textContent='セリフを編集中';$('addQuote').textContent='更新する';$('quoteInput').focus();};const del=document.createElement('button');del.type='button';del.textContent='×';del.title='削除';del.setAttribute('aria-label','セリフを削除');del.onclick=()=>{state.quotes=state.quotes.filter(q=>q.id!==quote.id);if(editingQuote===quote.id)clearQuoteForm();persist();renderQuotes();render._category=null;render();};actions.append(edit,del);row.append(copy,actions);list.append(row);}
   }
   function updateSelectedDateForm(){
     const date=parseDateKey(selectedDate);
@@ -166,13 +173,14 @@
   }
   function shiftCalendarMonth(amount){calendarCursor=new Date(calendarCursor.getFullYear(),calendarCursor.getMonth()+amount,1);selectedDate=localDateKey(calendarCursor);renderCalendar();}
   function saveScheduledQuote(){const text=$('scheduledQuote').value;if(!text.trim()){showToast('予定するセリフを入力してください');return;}state.calendarQuotes[selectedDate]=text;persist();renderCalendar();if(selectedDate===localDateKey(new Date())){render._category=null;render();}showToast('日付にセリフを保存しました');}
+  function saveDailyQuote(){const time=$('dailyQuoteTime').value,text=$('dailyQuoteText').value.trim();if(Boolean(time)!==Boolean(text)){showToast('時刻とセリフの両方を入力してください');return;}state.dailyQuote={time,text};persist();render._category=null;render();scheduleDailyQuoteRefresh();showToast(time?'毎日の時刻セリフを保存しました':'毎日の時刻セリフを解除しました');}
   function deleteScheduledQuote(){if(!Object.prototype.hasOwnProperty.call(state.calendarQuotes,selectedDate))return;delete state.calendarQuotes[selectedDate];persist();renderCalendar();if(selectedDate===localDateKey(new Date())){render._category=null;render();}showToast('日付のセリフを削除しました');}
   function clearQuoteForm() { editingQuote=null;$('quoteInput').value='';$('quoteEditLabel').textContent='新しいセリフ';$('addQuote').textContent='追加する'; }
   function saveQuote(){const text=$('quoteInput').value;if(!text.trim()){showToast('セリフを入力してください');return;}const record={id:editingQuote||`${Date.now()}-${Math.random()}`,category:$('quoteCategory').value,text};if(editingQuote)state.quotes=state.quotes.map(q=>q.id===editingQuote?record:q);else state.quotes.push(record);persist();clearQuoteForm();renderQuotes();render._category=null;render();}
   function saveSettings(){const vals={focus:Number($('focusMinutes').value),shortBreak:Number($('shortMinutes').value),longBreak:Number($('longMinutes').value)},target=Number($('sessionsTarget').value);if(Object.values(vals).some(v=>!Number.isInteger(v)||v<1)||!Number.isInteger(target)||target<1||target>12){showToast('時間と回数を正しく入力してください');return;}state.displayName=$('displayName').value.trim();state.durations=vals;state.target=target;state.sound=$('soundEnabled').checked;state.completed=state.completed%target;if(state.status==='idle')state.remaining=duration();persist();render();closeSettings();showToast('設定を保存しました');}
-  $('openSettings').addEventListener('click',openSettings);$('addImageShortcut').addEventListener('click',openSettings);$('backButton').addEventListener('click',closeSettings);$('saveSettings').addEventListener('click',saveSettings);
+  $('openSettings').addEventListener('click',openSettings);$('addImageShortcut').addEventListener('click',openSettings);$('backButton').addEventListener('click',closeSettings);$('saveSettings').addEventListener('click',saveSettings);$('quoteCategory').addEventListener('change',renderQuotes);
   $('startButton').addEventListener('click',start);$('pauseButton').addEventListener('click',pause);$('resumeButton').addEventListener('click',start);$('resetButton').addEventListener('click',reset);$('addQuote').addEventListener('click',saveQuote);
-  $('calendarPrev').addEventListener('click',()=>shiftCalendarMonth(-1));$('calendarNext').addEventListener('click',()=>shiftCalendarMonth(1));$('saveScheduledQuote').addEventListener('click',saveScheduledQuote);$('deleteScheduledQuote').addEventListener('click',deleteScheduledQuote);
+  $('calendarPrev').addEventListener('click',()=>shiftCalendarMonth(-1));$('calendarNext').addEventListener('click',()=>shiftCalendarMonth(1));$('saveScheduledQuote').addEventListener('click',saveScheduledQuote);$('deleteScheduledQuote').addEventListener('click',deleteScheduledQuote);$('saveDailyQuote').addEventListener('click',saveDailyQuote);
   $('imageInput').addEventListener('change',event=>{const file=event.target.files?.[0];if(!file)return;if(!file.type.startsWith('image/')){showToast('画像ファイルを選択してください');return;}if(file.size>20*1024*1024){showNotice('画像サイズが大きすぎます。20MB以下の画像をお選びください。');return;}openCropEditor(file);event.target.value='';});$('removeImage').addEventListener('click',deleteImage);$('adjustCrop').addEventListener('click',openSavedCrop);
   $('cropZoom').addEventListener('input',event=>setCropZoom(event.target.value));$('cancelCrop').addEventListener('click',closeCropEditor);$('applyCrop').addEventListener('click',applyCrop);
   $('cropCanvas').addEventListener('pointerdown',event=>{if(!cropSource)return;const rect=event.currentTarget.getBoundingClientRect();cropDragPoint={x:(event.clientX-rect.left)*CROP_WIDTH/rect.width,y:(event.clientY-rect.top)*CROP_HEIGHT/rect.height};event.currentTarget.setPointerCapture(event.pointerId);});
@@ -182,6 +190,7 @@
   document.addEventListener('visibilitychange',()=>{if(!document.hidden){render();if(state.status==='running'){state.remaining=Math.max(0,state.endAt-Date.now());if(state.remaining<=0)finishTimer();else render();}}});
   window.addEventListener('storage',event=>{if(event.key===KEY){state=loadState();render();}});
   function scheduleMidnightRefresh(){clearTimeout(midnightHandle);const next=new Date();next.setHours(24,0,0,50);midnightHandle=setTimeout(()=>{render._category=null;render();scheduleMidnightRefresh();},next.getTime()-Date.now());}
-  function registerOfflineCache(){if('serviceWorker'in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1'))navigator.serviceWorker.register('./sw.js').catch(()=>{});}
-  render();loadImage();if(state.status==='running')runTicker();scheduleMidnightRefresh();registerOfflineCache();
+  function scheduleDailyQuoteRefresh(){clearTimeout(dailyQuoteHandle);if(!state.dailyQuote.time||!state.dailyQuote.text.trim())return;const [hours,minutes]=state.dailyQuote.time.split(':').map(Number),next=new Date();next.setHours(hours,minutes,0,0);if(next<=new Date())next.setDate(next.getDate()+1);dailyQuoteHandle=setTimeout(()=>{render._category=null;render();scheduleDailyQuoteRefresh();},next.getTime()-Date.now());}
+  function registerOfflineCache(){if(!('serviceWorker'in navigator))return;const isLocal=location.hostname==='localhost'||location.hostname==='127.0.0.1';if(isLocal){navigator.serviceWorker.getRegistrations().then(registrations=>Promise.all(registrations.map(registration=>registration.unregister()))).catch(()=>{});if('caches'in window)caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('yumeodoro-shell-')).map(key=>caches.delete(key)))).catch(()=>{});return;}if(location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+  render();loadImage();if(state.status==='running')runTicker();scheduleMidnightRefresh();scheduleDailyQuoteRefresh();registerOfflineCache();
 })();
