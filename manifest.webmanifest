@@ -1,0 +1,9 @@
+{
+  "name": "Yumeodoro 夢で夢を叶えよ。",
+  "short_name": "Yumeodoro",
+  "lang": "ja",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#202631",
+  "theme_color": "#202631"
+}
