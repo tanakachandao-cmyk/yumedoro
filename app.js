@@ -13,6 +13,7 @@
   const pageOpenedDate = localDateKey(new Date());
   const pageOpeningQuote = state.calendarQuotes[pageOpenedDate];
   let pageOpeningQuotePending = typeof pageOpeningQuote === 'string' && Boolean(pageOpeningQuote.trim());
+  let dailyTimeQuotePending = Boolean(state.dailyQuote.time && state.dailyQuote.text.trim() && isDailyQuoteTimeDue(state.dailyQuote.time));
   let dbPromise;
   let imageUrl = null;
   let editingQuote = null;
@@ -120,9 +121,9 @@
     const modeNames = { focus: ['FOCUS TIME','集中'], shortBreak: ['SHORT BREAK','短い休憩'], longBreak: ['LONG BREAK','長い休憩'] };
     $('modeLabel').textContent = modeNames[state.mode][0]; $('modeJapanese').textContent = modeNames[state.mode][1];
     $('speechName').textContent = state.displayName || ''; $('speechName').hidden = !state.displayName;
-    const now = new Date(), today = localDateKey(now), dailyTimeActive = Boolean(state.dailyQuote.time && state.dailyQuote.text.trim() && `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}` >= state.dailyQuote.time);
-    const speechKey = `${today}:${categoryFor()}:${dailyTimeActive}`;
-    if (render._category !== speechKey) { render._category = speechKey; if (pageOpeningQuotePending) { $('speechText').textContent = pageOpeningQuote; pageOpeningQuotePending = false; } else { const scheduled = state.calendarQuotes[today]; $('speechText').textContent = dailyTimeActive ? state.dailyQuote.text : typeof scheduled === 'string' && scheduled.trim() ? scheduled : quoteText(); } }
+    const today = localDateKey(new Date());
+    const speechKey = `${today}:${categoryFor()}`;
+    if (render._category !== speechKey) { render._category = speechKey; if (pageOpeningQuotePending) { $('speechText').textContent = pageOpeningQuote; pageOpeningQuotePending = false; } else if (dailyTimeQuotePending && state.dailyQuote.text.trim()) { $('speechText').textContent = state.dailyQuote.text; dailyTimeQuotePending = false; } else { $('speechText').textContent = quoteText(); } }
     const left = state.status === 'running' ? Math.max(0, state.endAt - Date.now()) : Math.max(0, Number(state.remaining) || 0);
     const mins = Math.floor(left / 60_000), secs = Math.floor((left % 60_000) / 1000);
     $('timerDisplay').textContent = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
@@ -173,7 +174,7 @@
   }
   function shiftCalendarMonth(amount){calendarCursor=new Date(calendarCursor.getFullYear(),calendarCursor.getMonth()+amount,1);selectedDate=localDateKey(calendarCursor);renderCalendar();}
   function saveScheduledQuote(){const text=$('scheduledQuote').value;if(!text.trim()){showToast('予定するセリフを入力してください');return;}state.calendarQuotes[selectedDate]=text;persist();renderCalendar();if(selectedDate===localDateKey(new Date())){render._category=null;render();}showToast('日付にセリフを保存しました');}
-  function saveDailyQuote(){const time=$('dailyQuoteTime').value,text=$('dailyQuoteText').value.trim();if(Boolean(time)!==Boolean(text)){showToast('時刻とセリフの両方を入力してください');return;}state.dailyQuote={time,text};persist();render._category=null;render();scheduleDailyQuoteRefresh();showToast(time?'毎日の時刻セリフを保存しました':'毎日の時刻セリフを解除しました');}
+  function saveDailyQuote(){const time=$('dailyQuoteTime').value,text=$('dailyQuoteText').value.trim();if(Boolean(time)!==Boolean(text)){showToast('時刻とセリフの両方を入力してください');return;}state.dailyQuote={time,text};dailyTimeQuotePending=Boolean(time&&text&&isDailyQuoteTimeDue(time));persist();render._category=null;render();scheduleDailyQuoteRefresh();showToast(time?'毎日の時刻セリフを保存しました':'毎日の時刻セリフを解除しました');}
   function deleteScheduledQuote(){if(!Object.prototype.hasOwnProperty.call(state.calendarQuotes,selectedDate))return;delete state.calendarQuotes[selectedDate];persist();renderCalendar();if(selectedDate===localDateKey(new Date())){render._category=null;render();}showToast('日付のセリフを削除しました');}
   function clearQuoteForm() { editingQuote=null;$('quoteInput').value='';$('quoteEditLabel').textContent='新しいセリフ';$('addQuote').textContent='追加する'; }
   function saveQuote(){const text=$('quoteInput').value;if(!text.trim()){showToast('セリフを入力してください');return;}const record={id:editingQuote||`${Date.now()}-${Math.random()}`,category:$('quoteCategory').value,text};if(editingQuote)state.quotes=state.quotes.map(q=>q.id===editingQuote?record:q);else state.quotes.push(record);persist();clearQuoteForm();renderQuotes();render._category=null;render();}
@@ -190,7 +191,8 @@
   document.addEventListener('visibilitychange',()=>{if(!document.hidden){render();if(state.status==='running'){state.remaining=Math.max(0,state.endAt-Date.now());if(state.remaining<=0)finishTimer();else render();}}});
   window.addEventListener('storage',event=>{if(event.key===KEY){state=loadState();render();}});
   function scheduleMidnightRefresh(){clearTimeout(midnightHandle);const next=new Date();next.setHours(24,0,0,50);midnightHandle=setTimeout(()=>{render._category=null;render();scheduleMidnightRefresh();},next.getTime()-Date.now());}
-  function scheduleDailyQuoteRefresh(){clearTimeout(dailyQuoteHandle);if(!state.dailyQuote.time||!state.dailyQuote.text.trim())return;const [hours,minutes]=state.dailyQuote.time.split(':').map(Number),next=new Date();next.setHours(hours,minutes,0,0);if(next<=new Date())next.setDate(next.getDate()+1);dailyQuoteHandle=setTimeout(()=>{render._category=null;render();scheduleDailyQuoteRefresh();},next.getTime()-Date.now());}
+  function isDailyQuoteTimeDue(time,now=new Date()){return Boolean(time&&`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`>=time);}
+  function scheduleDailyQuoteRefresh(){clearTimeout(dailyQuoteHandle);if(!state.dailyQuote.time||!state.dailyQuote.text.trim())return;const [hours,minutes]=state.dailyQuote.time.split(':').map(Number),next=new Date();next.setHours(hours,minutes,0,0);if(next<=new Date())next.setDate(next.getDate()+1);dailyQuoteHandle=setTimeout(()=>{dailyTimeQuotePending=true;render._category=null;render();scheduleDailyQuoteRefresh();},next.getTime()-Date.now());}
   function registerOfflineCache(){if(!('serviceWorker'in navigator))return;const isLocal=location.hostname==='localhost'||location.hostname==='127.0.0.1';if(isLocal){navigator.serviceWorker.getRegistrations().then(registrations=>Promise.all(registrations.map(registration=>registration.unregister()))).catch(()=>{});if('caches'in window)caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('yumeodoro-shell-')).map(key=>caches.delete(key)))).catch(()=>{});return;}if(location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});}
   render();loadImage();if(state.status==='running')runTicker();scheduleMidnightRefresh();scheduleDailyQuoteRefresh();registerOfflineCache();
 })();
